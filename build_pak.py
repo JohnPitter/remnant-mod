@@ -1,5 +1,5 @@
 """
-build_pak.py — Gera um PAK v3 do UE4 com MaxPlayers customizado.
+build_pak.py — Gera um PAK v3 do UE4 com MaxPlayers customizado e fix de rede.
 
 Uso:
     python build_pak.py [--players N] [--input FILE] [--output FILE]
@@ -10,6 +10,74 @@ Exemplos:
 """
 
 import zlib, struct, hashlib, argparse, re, sys
+
+
+# Base do jogo original: 3 jogadores.
+_BASE_PLAYERS = 3
+
+
+def network_settings(players):
+    """Gera configuracoes de rede escaladas para o numero de jogadores.
+
+    Valores escalam a partir do baseline de 3 jogadores. Com 3 ou menos,
+    usa defaults do UE4 (nenhuma secao injetada). Acima de 3, escala
+    bandwidth, timeouts e replicacao proporcionalmente.
+    """
+    scale = players / _BASE_PLAYERS  # 6 players = 2.0x, 8 = 2.67x, etc.
+
+    # Banda por cliente: 15000 default * escala, cap 150000
+    client_rate = min(int(15000 * scale), 150000)
+
+    # Banda total do servidor: 100000 por jogador
+    total_bandwidth = 100000 * players
+
+    # Timeouts: base 30s, escalam com mais jogadores
+    initial_timeout = 30.0 + 15.0 * (players - _BASE_PLAYERS)
+    conn_timeout = 30.0 + 10.0 * (players - _BASE_PLAYERS)
+
+    # Velocidade reportada pelo cliente: acompanha client_rate
+    internet_speed = client_rate
+
+    # Intervalo de envio de movimento: mais jogadores = mais frequente
+    # Default ~18Hz (0.0555), escala ate ~60Hz (0.0166)
+    move_delta = max(0.0555 / scale, 0.0111)
+    move_delta_throttled = max(0.0666 / scale, 0.0166)
+
+    # Tolerancia de posicao: mais jogadores = mais permissivo
+    pos_error_sq = 3.0 * scale
+
+    # Throttle de movimento: aplica a partir de quantos jogadores
+    throttle_over = max(players - 1, _BASE_PLAYERS)
+
+    # Deteccao de discrepancia de tempo: desativa com mais de 3
+    time_discrepancy = 'true' if players <= _BASE_PLAYERS else 'false'
+
+    return f"""
+[/Script/OnlineSubsystemUtils.IpNetDriver]
+MaxClientRate={client_rate}
+MaxInternetClientRate={client_rate}
+InitialConnectTimeout={initial_timeout:.1f}
+ConnectionTimeout={conn_timeout:.1f}
+
+[/Script/Engine.Player]
+ConfiguredInternetSpeed={internet_speed}
+ConfiguredLanSpeed={internet_speed}
+
+[/Script/Engine.GameNetworkManager]
+TotalNetBandwidth={total_bandwidth}
+MaxDynamicBandwidth={client_rate}
+MinDynamicBandwidth=10000
+MoveRepSize=42.0
+MAXPOSITIONERRORSQUARED={pos_error_sq:.1f}
+CLIENTADJUSTUPDATECOST=180.0
+MAXCLIENTUPDATEINTERVAL=0.25
+MaxMoveDeltaTime=0.125
+ClientNetSendMoveDeltaTime={move_delta:.4f}
+ClientNetSendMoveDeltaTimeThrottled={move_delta_throttled:.4f}
+ClientNetSendMoveThrottleAtNetSpeed=10000
+ClientNetSendMoveThrottleOverPlayerCount={throttle_over}
+bMovementTimeDiscrepancyDetection={time_discrepancy}
+"""
 
 
 def read_pak(filepath):
@@ -99,6 +167,18 @@ def main():
     new_ini = ini_text.replace(old_value, new_value)
 
     print(f'{old_value} -> {new_value}')
+
+    # Injeta configuracoes de rede escaladas para o numero de jogadores
+    net_sections = [
+        '[/Script/OnlineSubsystemUtils.IpNetDriver]',
+        '[/Script/Engine.Player]',
+        '[/Script/Engine.GameNetworkManager]',
+    ]
+    missing = [s for s in net_sections if s not in new_ini]
+    if missing:
+        net_cfg = network_settings(args.players)
+        new_ini = new_ini.rstrip() + '\n' + net_cfg.strip() + '\n'
+        print(f'Rede escalada para {args.players} jogadores ({args.players}/{_BASE_PLAYERS} = {args.players/_BASE_PLAYERS:.2f}x)')
 
     pak_data = build_pak(new_ini)
     with open(args.output, 'wb') as f:
