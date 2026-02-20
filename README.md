@@ -57,8 +57,8 @@ Remnant From the Ashes\
 
 O UE4SS é o framework que permite os mods Lua (NetOptimize e EnemyScaling) rodarem.
 
-1. Baixe o **UE4SS** compatível com UE4 na página de [Releases do UE4SS](https://github.com/UE4SS-RE/RE-UE4SS/releases)
-   - Pegue a versão **UE4SS_v{versão}.zip** (não a "Lite")
+1. Baixe o **UE4SS v3.0.1** (ou mais recente) na página de [Releases do UE4SS](https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/v3.0.1)
+   - Pegue o arquivo **`UE4SS_v3.0.1.zip`** (não a versão "zDEV")
 2. Extraia **todo o conteúdo do zip** na pasta de binários do jogo:
    ```
    Remnant From the Ashes\Remnant\Binaries\Win64\
@@ -66,12 +66,14 @@ O UE4SS é o framework que permite os mods Lua (NetOptimize e EnemyScaling) roda
 3. Confira que esses arquivos existem:
    ```
    Win64\
-   ├── xinput1_3.dll    ← DLL do UE4SS
+   ├── dwmapi.dll       ← DLL proxy do UE4SS
    ├── UE4SS.dll        ← Core do UE4SS
    ├── UE4SS-settings.ini
    └── Mods\            ← Pasta onde vão os mods Lua
        └── ...          ← Mods padrão do UE4SS
    ```
+
+> **Se você tinha UE4SS v2.5.2 ou anterior:** delete o `xinput1_3.dll` antigo! O v3.0+ usa `dwmapi.dll` como proxy. Manter o `xinput1_3.dll` junto causa crash.
 
 ### Passo 4 — Instalar NetOptimize (obrigatório para o host)
 
@@ -113,7 +115,7 @@ Remnant From the Ashes\
     └── Binaries\
         └── Win64\
             ├── Remnant.exe
-            ├── xinput1_3.dll                ← UE4SS
+            ├── dwmapi.dll                   ← UE4SS (proxy)
             ├── UE4SS.dll                    ← UE4SS
             └── Mods\
                 ├── NetOptimize\             ← lobby + rede
@@ -157,7 +159,7 @@ O Remnant usa **Steam P2P** — não precisa de servidor dedicado.
 | PAK mod | Delete `6player.pak` da pasta `~mods` |
 | NetOptimize | Delete a pasta `Mods/NetOptimize/` ou remova o `enabled.txt` |
 | EnemyScaling | Delete a pasta `Mods/EnemyScaling/` ou remova o `enabled.txt` |
-| UE4SS inteiro | Delete `xinput1_3.dll`, `UE4SS.dll` e a pasta `Mods/` de `Win64/` |
+| UE4SS inteiro | Delete `dwmapi.dll`, `UE4SS.dll`, `UE4SS-settings.ini` e a pasta `Mods/` de `Win64/` |
 
 ---
 

@@ -10,7 +10,7 @@
     - Smoothing de movimento e interpolacao
     - Prioridades de replicacao e CVars do engine
 
-    Requer: UE4SS v2.5.2+ (https://github.com/UE4SS-RE/RE-UE4SS)
+    Requer: UE4SS v3.0.1+ (https://github.com/UE4SS-RE/RE-UE4SS)
 ]]
 
 ------------------------------------------------------------

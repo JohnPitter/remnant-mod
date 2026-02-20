@@ -5,7 +5,7 @@
     O jogo escala nativamente ate 3 jogadores. Este mod adiciona scaling
     extra para 4+ jogadores via UE4SS.
 
-    Requer: UE4SS v2.5.2+ (https://github.com/UE4SS-RE/RE-UE4SS)
+    Requer: UE4SS v3.0.1+ (https://github.com/UE4SS-RE/RE-UE4SS)
 ]]
 
 ------------------------------------------------------------
