@@ -108,17 +108,20 @@ python build_pak.py --players 10 --output custom.pak      # 10 jogadores
 
 ## Otimizações de rede
 
-O `build_pak.py` injeta configurações de rede **escaladas automaticamente** com base no `--players`. O fator de escala é `players / 3` (baseline do jogo). Exemplo com 6 jogadores (2.0x):
+O `build_pak.py` injeta configurações de rede otimizadas. Valores per-client são altos e fixos (100KB/s); apenas a banda total do servidor escala com o número de jogadores.
 
-| Configuração | Padrão UE4 | 4 players | 6 players | 8 players | Efeito |
-|---|---|---|---|---|---|
-| `MaxClientRate` | 15,000 | 20,000 | 30,000 | 40,000 | Banda máxima por cliente (bytes/s) |
-| `TotalNetBandwidth` | 32,000 | 400,000 | 600,000 | 800,000 | Banda total do servidor |
-| `InitialConnectTimeout` | 30s | 45s | 75s | 105s | Tempo para handshake inicial |
-| `ConnectionTimeout` | 30s | 40s | 60s | 80s | Timeout de inatividade |
-| `ConfiguredInternetSpeed` | 10,000 | 20,000 | 30,000 | 40,000 | Velocidade reportada pelo cliente |
-| `ClientNetSendMoveDeltaTime` | 0.0555 | 0.0416 | 0.0278 | 0.0208 | Intervalo de envio de movimento |
-| `bMovementTimeDiscrepancyDetection` | true | false | false | false | Desativa kick por discrepância |
+| Configuração | Padrão UE4 | Mod | Efeito |
+|---|---|---|---|
+| `NetServerMaxTickRate` | 30 | **60** | Tick rate do servidor (Hz) — principal causa de teleporte |
+| `MaxClientRate` | 15,000 | **100,000** | Banda máxima por cliente (bytes/s) |
+| `TotalNetBandwidth` | 32,000 | **100K × N** | Banda total (600K para 6 players) |
+| `ConfiguredInternetSpeed` | 10,000 | **100,000** | Velocidade reportada pelo cliente |
+| `MAXPOSITIONERRORSQUARED` | 3.0 | **25.0** | Tolerância de posição antes de corrigir |
+| `ClientNetSendMoveDeltaTime` | 0.0555 | **0.0166** | Envio de movimento (~60Hz vs ~18Hz) |
+| `MAXCLIENTUPDATEINTERVAL` | 0.25 | **0.125** | Intervalo máximo de update do servidor |
+| `InitialConnectTimeout` | 30s | **60 + 10×N** | Tempo para handshake (120s para 6) |
+| `bMovementTimeDiscrepancyDetection` | true | **false** | Desativa kick por discrepância |
+| `bUseDistanceBasedRelevancy` | false | **true** | Atores distantes atualizam menos — poupa banda |
 
 ## Limitações
 

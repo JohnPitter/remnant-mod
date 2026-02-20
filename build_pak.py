@@ -17,66 +17,59 @@ _BASE_PLAYERS = 3
 
 
 def network_settings(players):
-    """Gera configuracoes de rede escaladas para o numero de jogadores.
+    """Gera configuracoes de rede para o numero de jogadores.
 
-    Valores escalam a partir do baseline de 3 jogadores. Com 3 ou menos,
-    usa defaults do UE4 (nenhuma secao injetada). Acima de 3, escala
-    bandwidth, timeouts e replicacao proporcionalmente.
+    Usa valores altos e fixos para per-client (100KB/s) em vez de escalar
+    os defaults minusculos do UE4. So a banda total do servidor escala
+    linearmente com o numero de jogadores.
     """
-    scale = players / _BASE_PLAYERS  # 6 players = 2.0x, 8 = 2.67x, etc.
+    # Per-client: valor alto fixo. O default UE4 de 15000 causa
+    # teleporte/rubber-banding com qualquer carga real.
+    client_rate = 100000
 
-    # Banda por cliente: 15000 default * escala, cap 150000
-    client_rate = min(int(15000 * scale), 150000)
-
-    # Banda total do servidor: 100000 por jogador
+    # Banda total do servidor: 100KB por jogador
     total_bandwidth = 100000 * players
 
-    # Timeouts: base 30s, escalam com mais jogadores
-    initial_timeout = 30.0 + 15.0 * (players - _BASE_PLAYERS)
-    conn_timeout = 30.0 + 10.0 * (players - _BASE_PLAYERS)
+    # Timeouts generosos para handshake com muitas conexoes
+    initial_timeout = 60.0 + 10.0 * players
+    conn_timeout = 60.0 + 5.0 * players
 
-    # Velocidade reportada pelo cliente: acompanha client_rate
-    internet_speed = client_rate
+    # Tick rate do servidor e LAN: 60 = ~16ms por tick.
+    # Default UE4 eh 30 (33ms), que causa stutter visivel.
+    tick_rate = 60
 
-    # Intervalo de envio de movimento: mais jogadores = mais frequente
-    # Default ~18Hz (0.0555), escala ate ~60Hz (0.0166)
-    move_delta = max(0.0555 / scale, 0.0111)
-    move_delta_throttled = max(0.0666 / scale, 0.0166)
-
-    # Tolerancia de posicao: mais jogadores = mais permissivo
-    pos_error_sq = 3.0 * scale
-
-    # Throttle de movimento: aplica a partir de quantos jogadores
-    throttle_over = max(players - 1, _BASE_PLAYERS)
-
-    # Deteccao de discrepancia de tempo: desativa com mais de 3
-    time_discrepancy = 'true' if players <= _BASE_PLAYERS else 'false'
+    # Tolerancia de posicao: muito permissiva para evitar corrections
+    # constantes que causam teleporte. Default UE4 = 3.0.
+    pos_error_sq = 25.0
 
     return f"""
 [/Script/OnlineSubsystemUtils.IpNetDriver]
+NetServerMaxTickRate={tick_rate}
+LanServerMaxTickRate={tick_rate}
 MaxClientRate={client_rate}
 MaxInternetClientRate={client_rate}
 InitialConnectTimeout={initial_timeout:.1f}
 ConnectionTimeout={conn_timeout:.1f}
 
 [/Script/Engine.Player]
-ConfiguredInternetSpeed={internet_speed}
-ConfiguredLanSpeed={internet_speed}
+ConfiguredInternetSpeed={client_rate}
+ConfiguredLanSpeed={client_rate}
 
 [/Script/Engine.GameNetworkManager]
 TotalNetBandwidth={total_bandwidth}
 MaxDynamicBandwidth={client_rate}
-MinDynamicBandwidth=10000
+MinDynamicBandwidth=20000
 MoveRepSize=42.0
 MAXPOSITIONERRORSQUARED={pos_error_sq:.1f}
 CLIENTADJUSTUPDATECOST=180.0
-MAXCLIENTUPDATEINTERVAL=0.25
+MAXCLIENTUPDATEINTERVAL=0.125
 MaxMoveDeltaTime=0.125
-ClientNetSendMoveDeltaTime={move_delta:.4f}
-ClientNetSendMoveDeltaTimeThrottled={move_delta_throttled:.4f}
+ClientNetSendMoveDeltaTime=0.0166
+ClientNetSendMoveDeltaTimeThrottled=0.0222
 ClientNetSendMoveThrottleAtNetSpeed=10000
-ClientNetSendMoveThrottleOverPlayerCount={throttle_over}
-bMovementTimeDiscrepancyDetection={time_discrepancy}
+ClientNetSendMoveThrottleOverPlayerCount={max(players - 1, _BASE_PLAYERS)}
+bMovementTimeDiscrepancyDetection=false
+bUseDistanceBasedRelevancy=true
 """
 
 
