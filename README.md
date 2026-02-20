@@ -2,8 +2,9 @@
 
 Mod que aumenta o limite de jogadores em sessões co-op do **Remnant: From the Ashes** de 3 para **6 jogadores**, com otimizações de rede e balanceamento de inimigos.
 
-Composto por três módulos:
-- **PAK mod** — aumenta `MaxPlayers` e ajusta configs de rede via `DefaultGame.ini`
+Composto por quatro módulos:
+- **PAK mod (Game)** — `DefaultGame.ini`: `MaxPlayers` + `GameNetworkManager`
+- **PAK mod (Engine)** — `DefaultEngine.ini`: `SteamNetDriver` + `IpNetDriver` + CVars do engine
 - **EnemyScaling (UE4SS)** — escala vida e dano dos inimigos com base no número de jogadores
 - **NetOptimize (UE4SS)** — smoothing, interpolação e prioridades de rede em runtime
 
@@ -11,7 +12,7 @@ Composto por três módulos:
 
 ### Download rápido
 
-1. Baixe o arquivo **`6player.pak`** da página de [Releases](../../releases)
+1. Baixe **`6player.pak`** e **`6player_engine.pak`** da página de [Releases](../../releases)
 2. Localize a pasta de instalação do jogo:
    - **Steam:** clique com o botão direito no jogo > Gerenciar > Ver arquivos locais
    - Caminho típico: `C:\Program Files (x86)\Steam\steamapps\common\Remnant From the Ashes\`
@@ -20,14 +21,15 @@ Composto por três módulos:
    Remnant From the Ashes\Remnant\Content\Paks\
    ```
 4. Crie uma pasta chamada **`~mods`** dentro de `Paks` (se ainda não existir)
-5. Copie o arquivo `6player.pak` para dentro de `~mods`:
+5. Copie **ambos** os arquivos `.pak` para dentro de `~mods`:
    ```
    Remnant From the Ashes\
    └── Remnant\
        └── Content\
            └── Paks\
                ├── ~mods\
-               │   └── 6player.pak    ← aqui
+               │   ├── 6player.pak           ← MaxPlayers + rede (game)
+               │   └── 6player_engine.pak    ← SteamNetDriver + CVars (engine)
                ├── Remnant-WindowsNoEditor.pak
                └── ...
    ```
@@ -99,7 +101,7 @@ O mod também seta CVars do engine via console:
 
 ### Desinstalação
 
-- **PAK mod:** remova `6player.pak` da pasta `~mods`
+- **PAK mod:** remova `6player.pak` e `6player_engine.pak` da pasta `~mods`
 - **Mods UE4SS:** delete as pastas `EnemyScaling` e/ou `NetOptimize` de dentro de `Mods/`, ou remova o `enabled.txt` de cada um
 
 ---
@@ -132,18 +134,31 @@ python build_pak.py --players 10 --output custom.pak      # 10 jogadores
 
 ## Otimizações de rede
 
-O `build_pak.py` injeta configurações de rede otimizadas. Valores per-client são altos e fixos (100KB/s); apenas a banda total do servidor escala com o número de jogadores.
+O `build_pak.py` gera dois PAKs. Configurações são separadas entre `DefaultGame.ini` (game-level) e `DefaultEngine.ini` (engine-level, onde o UE4 realmente lê as configs de driver de rede).
+
+### DefaultEngine.ini (`6player_engine.pak`)
+
+**Configuração mais importante do mod.** Remnant usa Steam P2P, então o driver de rede real é `SteamNetDriver`. Configurar apenas `IpNetDriver` pode ser ignorado pelo jogo — por isso setamos ambos.
 
 | Configuração | Padrão UE4 | Mod | Efeito |
 |---|---|---|---|
-| `NetServerMaxTickRate` | 30 | **60** | Tick rate do servidor (Hz) — principal causa de teleporte |
-| `MaxClientRate` | 15,000 | **100,000** | Banda máxima por cliente (bytes/s) |
-| `TotalNetBandwidth` | 32,000 | **100K × N** | Banda total (600K para 6 players) |
+| `SteamNetDriver.NetServerMaxTickRate` | 30 | **60** | Tick rate do servidor (Hz) — principal causa de teleporte |
+| `SteamNetDriver.MaxClientRate` | 15,000 | **100,000** | Banda máxima por cliente (bytes/s) |
 | `ConfiguredInternetSpeed` | 10,000 | **100,000** | Velocidade reportada pelo cliente |
+| `p.NetEnableListenServerSmoothing` | 0 | **1** | Habilita smoothing no listen server (desabilitado por default!) |
+| `p.NetClientSmoothingMode` | 1 | **2** | Interpolação exponencial em vez de linear |
+| `p.NetCorrectionLifetime` | 0.1 | **0.5** | Correções suavizadas em 0.5s em vez de snap |
+| `net.MaxRPCPerNetUpdate` | 2 | **8** | Mais RPCs por tick (ações simultâneas) |
+| `net.IpNetDriverMaxDesiredSendSize` | 1024 | **4096** | Pacotes maiores = menos overhead |
+
+### DefaultGame.ini (`6player.pak`)
+
+| Configuração | Padrão UE4 | Mod | Efeito |
+|---|---|---|---|
+| `TotalNetBandwidth` | 32,000 | **100K × N** | Banda total (600K para 6 players) |
 | `MAXPOSITIONERRORSQUARED` | 3.0 | **25.0** | Tolerância de posição antes de corrigir |
 | `ClientNetSendMoveDeltaTime` | 0.0555 | **0.0166** | Envio de movimento (~60Hz vs ~18Hz) |
 | `MAXCLIENTUPDATEINTERVAL` | 0.25 | **0.125** | Intervalo máximo de update do servidor |
-| `InitialConnectTimeout` | 30s | **60 + 10×N** | Tempo para handshake (120s para 6) |
 | `bMovementTimeDiscrepancyDetection` | true | **false** | Desativa kick por discrepância |
 | `bUseDistanceBasedRelevancy` | false | **true** | Atores distantes atualizam menos — poupa banda |
 
