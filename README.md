@@ -5,7 +5,7 @@ Mod que aumenta o limite de jogadores em sessões co-op do **Remnant: From the A
 Composto por três módulos:
 - **PAK mod** — `DefaultGame.ini`: `MaxPlayers` + `SteamNetDriver` + `IpNetDriver` + `GameNetworkManager`
 - **EnemyScaling (UE4SS)** — escala vida e dano dos inimigos com base no número de jogadores
-- **NetOptimize (UE4SS)** — smoothing, interpolação, CVars de rede e prioridades em runtime
+- **NetOptimize (UE4SS)** — lobby override (força MaxPlayers no GameSession em runtime), smoothing, interpolação, CVars de rede e prioridades
 
 ## Instalação
 
@@ -78,10 +78,13 @@ Exemplo com 6 jogadores (3 extras): HP = 2.05x, Dano = 1.45x.
 
 #### Configuração do NetOptimize
 
-O NetOptimize elimina teleporte residual e melhora a fluidez visual configurando smoothing, interpolação e prioridades de rede em runtime.
+O NetOptimize resolve o limite de 3 jogadores no lobby Steam, elimina teleporte residual e melhora a fluidez visual.
+
+**Lobby override** — O jogo cria o lobby Steam com `NumPublicConnections=3` hardcoded no código. O `MaxPlayers=6` no INI configura o engine, mas **não** altera o lobby. O NetOptimize força `MaxPlayers` no `GameSession` em runtime e hookeia `RegisterPlayer` para garantir que o engine aceite mais conexões.
 
 | Variável | Padrão | Descrição |
 |---|---|---|
+| `MAX_PLAYERS` | `6` | Máximo de jogadores (força no lobby Steam em runtime) |
 | `SMOOTH_LOCATION_TIME` | `0.100` | Tempo de interpolação de posição (s) |
 | `LISTEN_SMOOTH_LOCATION_TIME` | `0.080` | Interpolação no listen server (s) |
 | `MAX_SMOOTH_DISTANCE` | `512.0` | Distância máx para suavizar (além disso, snap) |
@@ -148,10 +151,11 @@ O `build_pak.py` injeta todas as configurações de rede no `DefaultGame.ini`, i
 | `bMovementTimeDiscrepancyDetection` | true | **false** | Desativa kick por discrepância |
 | `bUseDistanceBasedRelevancy` | false | **true** | Atores distantes atualizam menos — poupa banda |
 
-### NetOptimize — CVars em runtime
+### NetOptimize — Lobby override + CVars em runtime
 
-| CVar / Propriedade | Padrão UE4 | Mod | Efeito |
+| Configuração | Padrão | Mod | Efeito |
 |---|---|---|---|
+| `GameSession.MaxPlayers` | 3 (hardcoded) | **6** | Força o engine a aceitar 6 conexões no lobby Steam |
 | `p.NetEnableListenServerSmoothing` | 0 | **1** | Habilita smoothing no listen server |
 | `p.NetClientSmoothingMode` | 1 | **2** | Interpolação exponencial (mais suave) |
 | `p.NetCorrectionLifetime` | 0.1 | **0.5** | Correções suavizadas em 0.5s |
@@ -237,7 +241,8 @@ O mod tenta múltiplos nomes de classes e propriedades para compatibilidade com 
 
 Complementa o PAK mod com otimizações que só são possíveis em runtime:
 
-1. **Smoothing** — configura `CharacterMovementComponent` de todos os personagens com interpolação exponencial e tempos otimizados para listen server
-2. **CVars** — seta variáveis do engine via `ConsoleCommand`: habilita smoothing no listen server (`p.NetEnableListenServerSmoothing`), combina pacotes de movimento, e suaviza correções de posição
-3. **Prioridade de rede** — jogadores recebem `NetPriority=3.0` (3x o padrão) e `MinNetUpdateFrequency=33Hz`, garantindo que bandwidth é alocada primeiro para players
-4. **Always Relevant** — marca player pawns como sempre relevantes, evitando que o engine "durma" a replicação de jogadores distantes
+1. **Lobby override** — o jogo cria o lobby Steam com `NumPublicConnections=3` hardcoded no código C++/Blueprint. O mod força `GameSession.MaxPlayers` em runtime e hookeia `RegisterPlayer` para garantir que o engine aceite conexões além de 3
+2. **Smoothing** — configura `CharacterMovementComponent` de todos os personagens com interpolação exponencial e tempos otimizados para listen server
+3. **CVars** — seta variáveis do engine via `ConsoleCommand`: habilita smoothing no listen server (`p.NetEnableListenServerSmoothing`), combina pacotes de movimento, e suaviza correções de posição
+4. **Prioridade de rede** — jogadores recebem `NetPriority=3.0` (3x o padrão) e `MinNetUpdateFrequency=33Hz`, garantindo que bandwidth é alocada primeiro para players
+5. **Always Relevant** — marca player pawns como sempre relevantes, evitando que o engine "durma" a replicação de jogadores distantes

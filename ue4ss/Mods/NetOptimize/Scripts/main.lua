@@ -1,11 +1,14 @@
 --[[
     NetOptimize — Remnant: From the Ashes
-    Otimiza smoothing, interpolacao e prioridade de rede para listen servers.
+    Otimiza smoothing, interpolacao, prioridade de rede e lobby Steam
+    para listen servers com mais de 3 jogadores.
 
-    O PAK mod ajusta configs no nivel do INI (bandwidth, tick rate, timeouts).
-    Este mod complementa setando propriedades em runtime que nao sao
-    acessiveis via INI: smoothing de movimento, interpolacao, prioridades
-    de replicacao e CVars do engine.
+    O PAK mod ajusta configs no nivel do INI (bandwidth, tick rate, timeouts,
+    MaxPlayers). Este mod complementa com:
+    - Lobby override: forca MaxPlayers no GameSession em runtime para que
+      o lobby Steam aceite mais de 3 conexoes
+    - Smoothing de movimento e interpolacao
+    - Prioridades de replicacao e CVars do engine
 
     Requer: UE4SS v2.5.2+ (https://github.com/UE4SS-RE/RE-UE4SS)
 ]]
@@ -39,6 +42,11 @@ local PLAYER_NET_PRIORITY = 3.0
 -- Garante que mesmo com pouca banda, personagens atualizem.
 local MIN_NET_UPDATE_FREQ = 33.0             -- default UE4: 2.0
 
+-- Maximo de jogadores para forcar no lobby Steam.
+-- O jogo hardcoda 3 no GameSession/Blueprint. Precisamos sobrescrever
+-- em runtime para que o lobby aceite mais conexoes.
+local MAX_PLAYERS = 6
+
 -- Intervalo de scan em milissegundos
 local SCAN_INTERVAL_MS = 4000
 
@@ -52,6 +60,7 @@ local LOG_ENABLED = true
 local processedCMCs = {}       -- CharacterMovementComponents ja configurados
 local processedPlayers = {}    -- Pawns de jogadores ja configurados
 local cvarsApplied = false
+local lobbyFixed = false        -- Flag: lobby ja foi corrigido
 
 ------------------------------------------------------------
 -- UTILIDADES
@@ -200,17 +209,144 @@ local function TryApplyCVars()
 end
 
 ------------------------------------------------------------
+-- LOBBY OVERRIDE: Forca MaxPlayers no GameSession
+------------------------------------------------------------
+
+-- O Remnant cria o lobby Steam com NumPublicConnections = 3 (hardcoded).
+-- MaxPlayers no INI configura o engine, mas NAO muda o lobby.
+-- Precisamos encontrar o GameSession em runtime e forcar MaxPlayers
+-- para que o engine aceite mais conexoes no RegisterPlayer().
+--
+-- Tambem tentamos hookar GameSession:RegisterPlayer para garantir
+-- que nao rejeite jogadores extras.
+
+local function TryFixLobby()
+    if lobbyFixed then return end
+
+    -- 1. Forca MaxPlayers no GameSession (classe base do engine)
+    local sessions = FindAllOf("GameSession")
+    if not sessions then return end
+
+    local fixed = false
+    for _, session in ipairs(sessions) do
+        if session:IsValid() then
+            local ok, currentMax = pcall(function() return session.MaxPlayers end)
+            if ok and type(currentMax) == "number" then
+                if currentMax < MAX_PLAYERS then
+                    pcall(function() session.MaxPlayers = MAX_PLAYERS end)
+                    Log(string.format(
+                        "GameSession MaxPlayers: %d -> %d",
+                        currentMax, MAX_PLAYERS
+                    ))
+                    fixed = true
+                else
+                    Log(string.format("GameSession MaxPlayers ja correto: %d", currentMax))
+                    fixed = true
+                end
+            end
+        end
+    end
+
+    -- 2. Tenta tambem em subclasses do GunfireRuntime
+    local sessionClassNames = {
+        "GunfireGameSession",
+        "RemnantGameSession",
+    }
+    for _, className in ipairs(sessionClassNames) do
+        local instances = FindAllOf(className)
+        if instances then
+            for _, session in ipairs(instances) do
+                if session:IsValid() then
+                    pcall(function() session.MaxPlayers = MAX_PLAYERS end)
+                    Log(string.format("  %s MaxPlayers -> %d", className, MAX_PLAYERS))
+                    fixed = true
+                end
+            end
+        end
+    end
+
+    -- 3. Tenta forcar no GameMode tambem (controla criacao de sessoes)
+    local gameModes = FindAllOf("GameModeBase")
+    if not gameModes then gameModes = FindAllOf("GameMode") end
+    if gameModes then
+        for _, gm in ipairs(gameModes) do
+            if gm:IsValid() then
+                -- GameMode tem GameSession como sub-objeto
+                local ok, gs = pcall(function() return gm.GameSession end)
+                if ok and gs and gs:IsValid() then
+                    pcall(function() gs.MaxPlayers = MAX_PLAYERS end)
+                    Log("GameMode->GameSession MaxPlayers forcado")
+                    fixed = true
+                end
+            end
+        end
+    end
+
+    if fixed then
+        lobbyFixed = true
+        Log("=== Lobby override aplicado! ===")
+    end
+end
+
+-- Hook no RegisterPlayer para interceptar rejeicoes de "game full"
+local registerPlayerHooked = false
+
+local function TryHookRegisterPlayer()
+    if registerPlayerHooked then return end
+
+    -- Tenta hookar GameSession:RegisterPlayer
+    -- Se o jogo rejeitar por "game full", o hook pode interceptar
+    local hookPaths = {
+        "/Script/Engine.GameSession:RegisterPlayer",
+    }
+
+    for _, path in ipairs(hookPaths) do
+        local ok = pcall(function()
+            RegisterHook(path, function(Context, ...)
+                -- Antes de RegisterPlayer executar, garante MaxPlayers alto
+                if Context:IsValid() then
+                    local session = Context:get()
+                    local okMax, curMax = pcall(function() return session.MaxPlayers end)
+                    if okMax and type(curMax) == "number" and curMax < MAX_PLAYERS then
+                        pcall(function() session.MaxPlayers = MAX_PLAYERS end)
+                        Log(string.format(
+                            "RegisterPlayer hook: MaxPlayers forcado %d -> %d",
+                            curMax, MAX_PLAYERS
+                        ))
+                    end
+                end
+            end)
+        end)
+
+        if ok then
+            registerPlayerHooked = true
+            Log("Hook RegisterPlayer registrado: " .. path)
+            break
+        end
+    end
+end
+
+------------------------------------------------------------
 -- LOOP PRINCIPAL
 ------------------------------------------------------------
 
 Log("=== NetOptimize carregado ===")
 Log(string.format(
-    "Config: smooth=%.3fs, listenSmooth=%.3fs, maxDist=%.0f, playerPriority=%.1f",
+    "Config: smooth=%.3fs, listenSmooth=%.3fs, maxDist=%.0f, playerPriority=%.1f, maxPlayers=%d",
     SMOOTH_LOCATION_TIME, LISTEN_SMOOTH_LOCATION_TIME,
-    MAX_SMOOTH_DISTANCE, PLAYER_NET_PRIORITY
+    MAX_SMOOTH_DISTANCE, PLAYER_NET_PRIORITY, MAX_PLAYERS
 ))
 
+-- Tenta hookar RegisterPlayer na inicializacao
+TryHookRegisterPlayer()
+
 LoopAsync(SCAN_INTERVAL_MS, function()
+    -- Forca MaxPlayers no GameSession (critico para lobby Steam)
+    TryFixLobby()
+
+    -- Tenta hook de RegisterPlayer (caso nao tenha funcionado na init)
+    TryHookRegisterPlayer()
+
     -- Tenta aplicar CVars (uma vez)
     TryApplyCVars()
 
