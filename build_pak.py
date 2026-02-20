@@ -19,9 +19,9 @@ _BASE_PLAYERS = 3
 def network_settings(players):
     """Gera configuracoes de rede para o numero de jogadores.
 
-    Configura AMBOS SteamNetDriver (driver real do Remnant via Steam P2P)
-    e IpNetDriver (fallback). Tudo vai no DefaultGame.ini porque
-    sobrescrever DefaultEngine.ini via PAK causa crash de shaders.
+    Configura IpNetDriver (SteamNetDriver herda dele), Player e
+    GameNetworkManager. NAO adicionar secao SteamNetDriver diretamente
+    — sobrescreve configs internas do Steam e limita conexoes a 3.
 
     CVars do engine sao setadas em runtime pelo mod NetOptimize (UE4SS).
     """
@@ -30,14 +30,6 @@ def network_settings(players):
     total_bandwidth = 100000 * players
 
     return f"""
-[/Script/OnlineSubsystemSteam.SteamNetDriver]
-NetServerMaxTickRate=60
-LanServerMaxTickRate=60
-MaxClientRate=100000
-MaxInternetClientRate=100000
-InitialConnectTimeout={initial_timeout:.1f}
-ConnectionTimeout={conn_timeout:.1f}
-
 [/Script/OnlineSubsystemUtils.IpNetDriver]
 NetServerMaxTickRate=60
 LanServerMaxTickRate=60
@@ -162,7 +154,6 @@ def main():
 
     # Injeta configuracoes de rede se ainda nao existem
     net_sections = [
-        '[/Script/OnlineSubsystemSteam.SteamNetDriver]',
         '[/Script/OnlineSubsystemUtils.IpNetDriver]',
         '[/Script/Engine.Player]',
         '[/Script/Engine.GameNetworkManager]',
@@ -171,7 +162,7 @@ def main():
     if missing:
         net_cfg = network_settings(args.players)
         new_ini = new_ini.rstrip() + '\n' + net_cfg.strip() + '\n'
-        print(f'Rede injetada para {args.players} jogadores (SteamNetDriver + IpNetDriver + GameNetworkManager)')
+        print(f'Rede injetada para {args.players} jogadores (IpNetDriver + Player + GameNetworkManager)')
 
     pak_data = build_pak(new_ini)
     with open(args.output, 'wb') as f:
