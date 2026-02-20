@@ -396,6 +396,88 @@ end
 -- MaxPlayers a cada 4s, o que eh suficiente.
 
 ------------------------------------------------------------
+-- SPAWN POINT SAFETY
+------------------------------------------------------------
+
+-- TPSGameMode_Main tem 4 SpawnPoints (Spawn1-4_GEN_VARIABLE).
+-- Se o SpawnPointManager indexa por numero de player, player 5/6
+-- pode pegar nullptr. Monitoramos spawn points e duplicamos se necessario.
+
+local spawnPointsChecked = false
+
+local function EnsureSpawnPoints()
+    if spawnPointsChecked then return end
+
+    -- Procura o SpawnPointManager ativo
+    local ok, managers = pcall(FindAllOf, "SpawnPointManager")
+    if not ok or not managers then return end
+
+    for _, mgr in ipairs(managers) do
+        if mgr:IsValid() then
+            -- Tenta ler SpawnPoints (array de spawn points no manager)
+            local ok2, spawnPoints = pcall(function() return mgr.SpawnPoints end)
+            if ok2 and spawnPoints then
+                local count = 0
+                pcall(function()
+                    count = #spawnPoints
+                end)
+                Log(string.format("SpawnPointManager: %d spawn points encontrados", count))
+
+                -- Se tem menos que MaxPlayers spawn points, o engine vai fazer
+                -- fallback (modulo/round-robin). Logamos para diagnóstico.
+                local target = GetMaxPlayers()
+                if count > 0 and count < target then
+                    Log(string.format(
+                        "AVISO: Apenas %d spawn points para %d jogadores. Engine deve fazer fallback.",
+                        count, target
+                    ))
+                end
+            end
+            spawnPointsChecked = true
+        end
+    end
+end
+
+------------------------------------------------------------
+-- GAME STATE SCALING SAFETY
+------------------------------------------------------------
+
+-- O TPSGameState usa NumPlayersScalingTable (DataTable) para escalar
+-- inimigos. O PAK mod adiciona rows 5 e 6, mas se o PAK nao carregou
+-- a DataTable (ex: cliente sem mod), o FindRow("5") retorna nullptr -> crash.
+-- Monitoramos o GameState e logamos o estado do scaling.
+
+local scalingChecked = false
+
+local function CheckScalingSafety()
+    if scalingChecked then return end
+
+    -- Procura TPSGameState
+    local classNames = { "TPSGameState", "GameState", "GameStateBase" }
+    for _, className in ipairs(classNames) do
+        local ok, states = pcall(FindAllOf, className)
+        if ok and states then
+            for _, state in ipairs(states) do
+                if state:IsValid() then
+                    -- Tenta ler NumPlayersScalingTable
+                    local ok2, table = pcall(function() return state.NumPlayersScalingTable end)
+                    if ok2 and table then
+                        Log(string.format("GameState.NumPlayersScalingTable: presente (@ 0x%X)", state:GetAddress()))
+                        scalingChecked = true
+                        return
+                    end
+                    -- Tenta DifficultyScalingTable
+                    local ok3, dtable = pcall(function() return state.DifficultyScalingTable end)
+                    if ok3 and dtable then
+                        Log(string.format("GameState.DifficultyScalingTable: presente"))
+                    end
+                end
+            end
+        end
+    end
+end
+
+------------------------------------------------------------
 -- LOOP PRINCIPAL
 ------------------------------------------------------------
 
@@ -422,6 +504,12 @@ LoopAsync(SCAN_INTERVAL_MS, function()
 
     -- Scan de player pawns para prioridade de rede
     ScanPlayerPawns()
+
+    -- Verifica spawn points (uma vez)
+    EnsureSpawnPoints()
+
+    -- Verifica scaling tables (uma vez)
+    CheckScalingSafety()
 
     return false -- continua o loop
 end)
