@@ -1,9 +1,5 @@
 """
-build_pak.py — Gera PAKs v3 do UE4 para o mod de Remnant.
-
-Gera dois PAKs:
-  - {N}player.pak         (DefaultGame.ini: MaxPlayers + GameNetworkManager)
-  - {N}player_engine.pak  (DefaultEngine.ini: SteamNetDriver + CVars)
+build_pak.py — Gera um PAK v3 do UE4 com MaxPlayers customizado e fix de rede.
 
 Uso:
     python build_pak.py [--players N] [--input FILE] [--output FILE]
@@ -20,15 +16,40 @@ import zlib, struct, hashlib, argparse, re, sys
 _BASE_PLAYERS = 3
 
 
-# ---------------------------------------------------------------------------
-# Configuracoes de rede — DefaultGame.ini
-# ---------------------------------------------------------------------------
+def network_settings(players):
+    """Gera configuracoes de rede para o numero de jogadores.
 
-def game_network_settings(players):
-    """Settings que pertencem ao DefaultGame.ini (GameNetworkManager)."""
+    Configura AMBOS SteamNetDriver (driver real do Remnant via Steam P2P)
+    e IpNetDriver (fallback). Tudo vai no DefaultGame.ini porque
+    sobrescrever DefaultEngine.ini via PAK causa crash de shaders.
+
+    CVars do engine sao setadas em runtime pelo mod NetOptimize (UE4SS).
+    """
+    initial_timeout = 60.0 + 10.0 * players
+    conn_timeout = 60.0 + 5.0 * players
     total_bandwidth = 100000 * players
 
     return f"""
+[/Script/OnlineSubsystemSteam.SteamNetDriver]
+NetServerMaxTickRate=60
+LanServerMaxTickRate=60
+MaxClientRate=100000
+MaxInternetClientRate=100000
+InitialConnectTimeout={initial_timeout:.1f}
+ConnectionTimeout={conn_timeout:.1f}
+
+[/Script/OnlineSubsystemUtils.IpNetDriver]
+NetServerMaxTickRate=60
+LanServerMaxTickRate=60
+MaxClientRate=100000
+MaxInternetClientRate=100000
+InitialConnectTimeout={initial_timeout:.1f}
+ConnectionTimeout={conn_timeout:.1f}
+
+[/Script/Engine.Player]
+ConfiguredInternetSpeed=100000
+ConfiguredLanSpeed=100000
+
 [/Script/Engine.GameNetworkManager]
 TotalNetBandwidth={total_bandwidth}
 MaxDynamicBandwidth=100000
@@ -44,53 +65,6 @@ ClientNetSendMoveThrottleAtNetSpeed=10000
 ClientNetSendMoveThrottleOverPlayerCount={max(players - 1, _BASE_PLAYERS)}
 bMovementTimeDiscrepancyDetection=false
 bUseDistanceBasedRelevancy=true
-"""
-
-
-# ---------------------------------------------------------------------------
-# Configuracoes de rede — DefaultEngine.ini
-# ---------------------------------------------------------------------------
-
-def engine_network_settings(players):
-    """Settings que pertencem ao DefaultEngine.ini.
-
-    CRITICO: Remnant usa Steam P2P, entao o driver de rede real eh
-    SteamNetDriver, nao IpNetDriver. Configurar apenas IpNetDriver
-    pode ser ignorado pelo jogo. Aqui configuramos AMBOS os drivers
-    + CVars do engine que so funcionam via DefaultEngine.ini.
-    """
-    initial_timeout = 60.0 + 10.0 * players
-    conn_timeout = 60.0 + 5.0 * players
-
-    # Bloco de settings identico para ambos os drivers
-    driver_settings = f"""\
-NetServerMaxTickRate=60
-LanServerMaxTickRate=60
-MaxClientRate=100000
-MaxInternetClientRate=100000
-InitialConnectTimeout={initial_timeout:.1f}
-ConnectionTimeout={conn_timeout:.1f}"""
-
-    return f"""
-[/Script/OnlineSubsystemSteam.SteamNetDriver]
-{driver_settings}
-
-[/Script/OnlineSubsystemUtils.IpNetDriver]
-{driver_settings}
-
-[/Script/Engine.Player]
-ConfiguredInternetSpeed=100000
-ConfiguredLanSpeed=100000
-
-[ConsoleVariables]
-p.NetEnableListenServerSmoothing=1
-p.NetClientSmoothingMode=2
-p.NetEnableMoveCombining=1
-p.NetCorrectionLifetime=0.5
-p.NetServerMoveTimestampExpiredWarningThreshold=5.0
-net.IpNetDriverMaxDesiredSendSize=4096
-net.MaxRPCPerNetUpdate=8
-net.AllowEncryption=0
 """
 
 
@@ -124,10 +98,10 @@ def build_entry_record(compressed_size, uncompressed_size, sha1, header_size=73)
     return rec
 
 
-def build_index(entry_record, config_filename='DefaultGame.ini'):
+def build_index(entry_record):
     """Constroi o indice do PAK."""
     mount = b'../../../\x00'
-    fname = f'Remnant/Config/{config_filename}\x00'.encode()
+    fname = b'Remnant/Config/DefaultGame.ini\x00'
 
     idx = struct.pack('<i', len(mount)) + mount
     idx += struct.pack('<i', 1)                         # 1 entrada
@@ -146,37 +120,19 @@ def build_footer(index_offset, index_bytes):
     return ftr
 
 
-def build_pak(ini_text, config_filename='DefaultGame.ini'):
+def build_pak(ini_text):
     """Monta o PAK completo a partir do texto INI."""
     ini_bytes = ini_text.encode('utf-8')
     compressed = zlib.compress(ini_bytes)
     sha1 = hashlib.sha1(ini_bytes).digest()
 
     entry_rec = build_entry_record(len(compressed), len(ini_bytes), sha1)
-    index = build_index(entry_rec, config_filename)
+    index = build_index(entry_rec)
     index_offset = len(entry_rec) + len(compressed)
     footer = build_footer(index_offset, index)
 
     return entry_rec + compressed + index + footer
 
-
-def write_and_verify(pak_data, output_path, expected_text):
-    """Escreve o PAK e verifica o conteudo."""
-    with open(output_path, 'wb') as f:
-        f.write(pak_data)
-
-    verify = read_pak(output_path)
-    if expected_text in verify:
-        print(f'  OK: {output_path} ({len(pak_data)} bytes)')
-        return True
-    else:
-        print(f'  ERRO: verificacao falhou para {output_path}', file=sys.stderr)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description='Gera mod PAK para Remnant')
@@ -191,9 +147,6 @@ def main():
     if args.output is None:
         args.output = f'{args.players}player.pak'
 
-    # --- PAK 1: DefaultGame.ini (MaxPlayers + GameNetworkManager) ---
-    print(f'[1/2] DefaultGame.ini')
-
     ini_text = read_pak(args.input)
 
     match = re.search(r'MaxPlayers=\d+', ini_text)
@@ -204,42 +157,31 @@ def main():
     old_value = match.group()
     new_value = f'MaxPlayers={args.players}'
     new_ini = ini_text.replace(old_value, new_value)
-    print(f'  {old_value} -> {new_value}')
 
-    # Injeta GameNetworkManager se nao existe
-    if '[/Script/Engine.GameNetworkManager]' not in new_ini:
-        game_cfg = game_network_settings(args.players)
-        new_ini = new_ini.rstrip() + '\n' + game_cfg.strip() + '\n'
-        print(f'  GameNetworkManager injetado (TotalBandwidth={100000 * args.players})')
+    print(f'{old_value} -> {new_value}')
 
-    # Remove settings de IpNetDriver e Player do DefaultGame.ini
-    # (agora ficam no DefaultEngine.ini onde pertencem)
-    for section in ['[/Script/OnlineSubsystemUtils.IpNetDriver]', '[/Script/Engine.Player]']:
-        start = new_ini.find(section)
-        if start != -1:
-            next_section = new_ini.find('\n[', start + 1)
-            if next_section == -1:
-                next_section = len(new_ini)
-            new_ini = new_ini[:start] + new_ini[next_section:]
-            print(f'  Removido {section} (movido para DefaultEngine.ini)')
+    # Injeta configuracoes de rede se ainda nao existem
+    net_sections = [
+        '[/Script/OnlineSubsystemSteam.SteamNetDriver]',
+        '[/Script/OnlineSubsystemUtils.IpNetDriver]',
+        '[/Script/Engine.Player]',
+        '[/Script/Engine.GameNetworkManager]',
+    ]
+    missing = [s for s in net_sections if s not in new_ini]
+    if missing:
+        net_cfg = network_settings(args.players)
+        new_ini = new_ini.rstrip() + '\n' + net_cfg.strip() + '\n'
+        print(f'Rede injetada para {args.players} jogadores (SteamNetDriver + IpNetDriver + GameNetworkManager)')
 
-    pak1 = build_pak(new_ini, 'DefaultGame.ini')
-    ok1 = write_and_verify(pak1, args.output, new_value)
+    pak_data = build_pak(new_ini)
+    with open(args.output, 'wb') as f:
+        f.write(pak_data)
 
-    # --- PAK 2: DefaultEngine.ini (SteamNetDriver + IpNetDriver + CVars) ---
-    print(f'[2/2] DefaultEngine.ini')
-
-    engine_ini = engine_network_settings(args.players).strip() + '\n'
-    engine_output = args.output.replace('.pak', '_engine.pak')
-
-    pak2 = build_pak(engine_ini, 'DefaultEngine.ini')
-    ok2 = write_and_verify(pak2, engine_output, 'SteamNetDriver')
-
-    if ok1 and ok2:
-        print(f'\nPronto! Copie AMBOS para ~mods:')
-        print(f'  {args.output}')
-        print(f'  {engine_output}')
+    verify_text = read_pak(args.output)
+    if new_value in verify_text:
+        print(f'OK: {args.output} ({len(pak_data)} bytes)')
     else:
+        print('ERRO: verificacao falhou', file=sys.stderr)
         sys.exit(1)
 
 
