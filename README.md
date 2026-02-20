@@ -184,7 +184,7 @@ Edite os valores no topo de `NetOptimize/Scripts/main.lua`:
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `MAX_PLAYERS` | `6` | Máximo de jogadores (força no lobby Steam em runtime) |
+| `MAX_PLAYERS_FALLBACK` | `6` | Fallback caso a leitura do GameSession falhe (normalmente lê do PAK automaticamente) |
 | `SMOOTH_LOCATION_TIME` | `0.100` | Tempo de interpolação de posição (s) |
 | `LISTEN_SMOOTH_LOCATION_TIME` | `0.080` | Interpolação no listen server (s) |
 | `MAX_SMOOTH_DISTANCE` | `512.0` | Distância máx para suavizar (além disso, snap) |
@@ -215,7 +215,7 @@ python build_pak.py --players 8
 | `--input` | `4player.pak` | PAK base para extrair o INI |
 | `--output` | `{N}player.pak` | Nome do arquivo de saída |
 
-> Se mudar o número de jogadores no PAK, lembre de mudar `MAX_PLAYERS` no `main.lua` do NetOptimize também.
+> O NetOptimize lê o `MaxPlayers` do PAK automaticamente — não precisa editar nada no Lua ao mudar `--players`.
 
 ---
 

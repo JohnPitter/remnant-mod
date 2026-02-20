@@ -42,10 +42,10 @@ local PLAYER_NET_PRIORITY = 3.0
 -- Garante que mesmo com pouca banda, personagens atualizem.
 local MIN_NET_UPDATE_FREQ = 33.0             -- default UE4: 2.0
 
--- Maximo de jogadores para forcar no lobby Steam.
--- O jogo hardcoda 3 no GameSession/Blueprint. Precisamos sobrescrever
--- em runtime para que o lobby aceite mais conexoes.
-local MAX_PLAYERS = 6
+-- Fallback para MaxPlayers caso a leitura do GameSession falhe.
+-- Em uso normal nao precisa editar: o mod le o valor que o PAK
+-- setou no GameSession via INI (ex: build_pak.py --players 8 -> 8).
+local MAX_PLAYERS_FALLBACK = 6
 
 -- Intervalo de scan em milissegundos
 local SCAN_INTERVAL_MS = 4000
@@ -61,6 +61,7 @@ local processedCMCs = {}       -- CharacterMovementComponents ja configurados
 local processedPlayers = {}    -- Pawns de jogadores ja configurados
 local cvarsApplied = false
 local lobbyFixed = false        -- Flag: lobby ja foi corrigido
+local maxPlayers = nil          -- Lido do GameSession em runtime (nil = ainda nao lido)
 
 ------------------------------------------------------------
 -- UTILIDADES
@@ -209,19 +210,72 @@ local function TryApplyCVars()
 end
 
 ------------------------------------------------------------
--- LOBBY OVERRIDE: Forca MaxPlayers no GameSession
+-- LOBBY OVERRIDE: Le MaxPlayers do INI e forca no GameSession
 ------------------------------------------------------------
 
--- O Remnant cria o lobby Steam com NumPublicConnections = 3 (hardcoded).
--- MaxPlayers no INI configura o engine, mas NAO muda o lobby.
--- Precisamos encontrar o GameSession em runtime e forcar MaxPlayers
--- para que o engine aceite mais conexoes no RegisterPlayer().
+-- Fluxo:
+-- 1. O PAK mod seta [/Script/Engine.GameSession] MaxPlayers=N no INI
+-- 2. O engine carrega esse valor no GameSession quando cria a sessao
+-- 3. MAS o jogo pode sobrescrever com 3 (hardcoded) ao criar o lobby Steam
+-- 4. Este mod le o valor do INI (via GameSession CDO) e forca de volta
 --
--- Tambem tentamos hookar GameSession:RegisterPlayer para garantir
--- que nao rejeite jogadores extras.
+-- Resultado: basta mudar --players no build_pak.py e tudo sincroniza.
+
+-- Le o MaxPlayers que o PAK setou no GameSession (via Class Default Object).
+-- O CDO contem os valores do INI antes do jogo sobrescrever em runtime.
+local function ReadMaxPlayersFromConfig()
+    if maxPlayers then return maxPlayers end
+
+    -- Tenta ler do CDO (Class Default Object) — reflete o INI
+    local classNames = {
+        "GameSession",
+        "GunfireGameSession",
+        "RemnantGameSession",
+    }
+    for _, className in ipairs(classNames) do
+        local ok, cdo = pcall(function()
+            return StaticFindObject("/" .. className .. "/Default__" .. className)
+        end)
+        if ok and cdo and cdo:IsValid() then
+            local ok2, val = pcall(function() return cdo.MaxPlayers end)
+            if ok2 and type(val) == "number" and val > 3 then
+                maxPlayers = val
+                Log(string.format("MaxPlayers lido do CDO (%s): %d", className, val))
+                return maxPlayers
+            end
+        end
+    end
+
+    -- Fallback: tenta ler de uma instancia ativa do GameSession
+    local sessions = FindAllOf("GameSession")
+    if sessions then
+        for _, session in ipairs(sessions) do
+            if session:IsValid() then
+                local ok, val = pcall(function() return session.MaxPlayers end)
+                if ok and type(val) == "number" and val > 3 then
+                    maxPlayers = val
+                    Log(string.format("MaxPlayers lido de instancia ativa: %d", val))
+                    return maxPlayers
+                end
+            end
+        end
+    end
+
+    -- Ultimo fallback: usa o valor da config
+    maxPlayers = MAX_PLAYERS_FALLBACK
+    Log(string.format("MaxPlayers fallback: %d", maxPlayers))
+    return maxPlayers
+end
+
+-- Retorna o MaxPlayers efetivo (le do config na primeira chamada)
+local function GetMaxPlayers()
+    return maxPlayers or ReadMaxPlayersFromConfig() or MAX_PLAYERS_FALLBACK
+end
 
 local function TryFixLobby()
     if lobbyFixed then return end
+
+    local target = GetMaxPlayers()
 
     -- 1. Forca MaxPlayers no GameSession (classe base do engine)
     local sessions = FindAllOf("GameSession")
@@ -232,11 +286,11 @@ local function TryFixLobby()
         if session:IsValid() then
             local ok, currentMax = pcall(function() return session.MaxPlayers end)
             if ok and type(currentMax) == "number" then
-                if currentMax < MAX_PLAYERS then
-                    pcall(function() session.MaxPlayers = MAX_PLAYERS end)
+                if currentMax < target then
+                    pcall(function() session.MaxPlayers = target end)
                     Log(string.format(
                         "GameSession MaxPlayers: %d -> %d",
-                        currentMax, MAX_PLAYERS
+                        currentMax, target
                     ))
                     fixed = true
                 else
@@ -257,8 +311,8 @@ local function TryFixLobby()
         if instances then
             for _, session in ipairs(instances) do
                 if session:IsValid() then
-                    pcall(function() session.MaxPlayers = MAX_PLAYERS end)
-                    Log(string.format("  %s MaxPlayers -> %d", className, MAX_PLAYERS))
+                    pcall(function() session.MaxPlayers = target end)
+                    Log(string.format("  %s MaxPlayers -> %d", className, target))
                     fixed = true
                 end
             end
@@ -271,10 +325,9 @@ local function TryFixLobby()
     if gameModes then
         for _, gm in ipairs(gameModes) do
             if gm:IsValid() then
-                -- GameMode tem GameSession como sub-objeto
                 local ok, gs = pcall(function() return gm.GameSession end)
                 if ok and gs and gs:IsValid() then
-                    pcall(function() gs.MaxPlayers = MAX_PLAYERS end)
+                    pcall(function() gs.MaxPlayers = target end)
                     Log("GameMode->GameSession MaxPlayers forcado")
                     fixed = true
                 end
@@ -294,8 +347,6 @@ local registerPlayerHooked = false
 local function TryHookRegisterPlayer()
     if registerPlayerHooked then return end
 
-    -- Tenta hookar GameSession:RegisterPlayer
-    -- Se o jogo rejeitar por "game full", o hook pode interceptar
     local hookPaths = {
         "/Script/Engine.GameSession:RegisterPlayer",
     }
@@ -303,15 +354,15 @@ local function TryHookRegisterPlayer()
     for _, path in ipairs(hookPaths) do
         local ok = pcall(function()
             RegisterHook(path, function(Context, ...)
-                -- Antes de RegisterPlayer executar, garante MaxPlayers alto
                 if Context:IsValid() then
                     local session = Context:get()
+                    local target = GetMaxPlayers()
                     local okMax, curMax = pcall(function() return session.MaxPlayers end)
-                    if okMax and type(curMax) == "number" and curMax < MAX_PLAYERS then
-                        pcall(function() session.MaxPlayers = MAX_PLAYERS end)
+                    if okMax and type(curMax) == "number" and curMax < target then
+                        pcall(function() session.MaxPlayers = target end)
                         Log(string.format(
                             "RegisterPlayer hook: MaxPlayers forcado %d -> %d",
-                            curMax, MAX_PLAYERS
+                            curMax, target
                         ))
                     end
                 end
@@ -332,10 +383,11 @@ end
 
 Log("=== NetOptimize carregado ===")
 Log(string.format(
-    "Config: smooth=%.3fs, listenSmooth=%.3fs, maxDist=%.0f, playerPriority=%.1f, maxPlayers=%d",
+    "Config: smooth=%.3fs, listenSmooth=%.3fs, maxDist=%.0f, playerPriority=%.1f, fallback=%d",
     SMOOTH_LOCATION_TIME, LISTEN_SMOOTH_LOCATION_TIME,
-    MAX_SMOOTH_DISTANCE, PLAYER_NET_PRIORITY, MAX_PLAYERS
+    MAX_SMOOTH_DISTANCE, PLAYER_NET_PRIORITY, MAX_PLAYERS_FALLBACK
 ))
+Log("MaxPlayers sera lido do GameSession (setado pelo PAK mod via INI)")
 
 -- Tenta hookar RegisterPlayer na inicializacao
 TryHookRegisterPlayer()
