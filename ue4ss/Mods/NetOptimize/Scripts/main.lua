@@ -221,55 +221,40 @@ end
 --
 -- Resultado: basta mudar --players no build_pak.py e tudo sincroniza.
 
--- Le o MaxPlayers que o PAK setou no GameSession (via Class Default Object).
--- O CDO contem os valores do INI antes do jogo sobrescrever em runtime.
+-- Le o MaxPlayers que o PAK setou no GameSession.
+-- O INI seta o valor no GameSession; nos lemos dele em runtime.
 local function ReadMaxPlayersFromConfig()
     if maxPlayers then return maxPlayers end
 
-    -- Tenta ler do CDO (Class Default Object) — reflete o INI
+    -- Tenta ler de instancias ativas do GameSession e subclasses
     local classNames = {
         "GameSession",
         "GunfireGameSession",
         "RemnantGameSession",
     }
     for _, className in ipairs(classNames) do
-        local ok, cdo = pcall(function()
-            return StaticFindObject("/" .. className .. "/Default__" .. className)
-        end)
-        if ok and cdo and cdo:IsValid() then
-            local ok2, val = pcall(function() return cdo.MaxPlayers end)
-            if ok2 and type(val) == "number" and val > 3 then
-                maxPlayers = val
-                Log(string.format("MaxPlayers lido do CDO (%s): %d", className, val))
-                return maxPlayers
-            end
-        end
-    end
-
-    -- Fallback: tenta ler de uma instancia ativa do GameSession
-    local sessions = FindAllOf("GameSession")
-    if sessions then
-        for _, session in ipairs(sessions) do
-            if session:IsValid() then
-                local ok, val = pcall(function() return session.MaxPlayers end)
-                if ok and type(val) == "number" and val > 3 then
+        local ok, sessions = pcall(FindAllOf, className)
+        if ok and sessions then
+            for _, session in ipairs(sessions) do
+                local ok2, val = pcall(function() return session.MaxPlayers end)
+                if ok2 and type(val) == "number" and val > 3 then
                     maxPlayers = val
-                    Log(string.format("MaxPlayers lido de instancia ativa: %d", val))
+                    Log(string.format("MaxPlayers lido de %s: %d", className, val))
                     return maxPlayers
                 end
             end
         end
     end
 
-    -- Ultimo fallback: usa o valor da config
-    maxPlayers = MAX_PLAYERS_FALLBACK
-    Log(string.format("MaxPlayers fallback: %d", maxPlayers))
-    return maxPlayers
+    return nil -- ainda nao disponivel, tenta de novo no proximo scan
 end
 
--- Retorna o MaxPlayers efetivo (le do config na primeira chamada)
+-- Retorna o MaxPlayers efetivo
 local function GetMaxPlayers()
-    return maxPlayers or ReadMaxPlayersFromConfig() or MAX_PLAYERS_FALLBACK
+    if maxPlayers then return maxPlayers end
+    local val = ReadMaxPlayersFromConfig()
+    if val then return val end
+    return MAX_PLAYERS_FALLBACK
 end
 
 local function TryFixLobby()
