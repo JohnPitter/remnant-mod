@@ -1,6 +1,6 @@
 # Remnant: From the Ashes — 6 Player Co-op Mod
 
-Mod que aumenta o limite de jogadores em sessões co-op do **Remnant: From the Ashes** de 3 para **6 jogadores**, com otimizações de rede e balanceamento de inimigos.
+Mod que aumenta o limite de jogadores em sessões co-op do **Remnant: From the Ashes** de 3 para **6 jogadores**, com otimizações de rede, scaling de inimigos nativo e balanceamento extra via Lua.
 
 ## Quem precisa instalar o quê
 
@@ -202,10 +202,15 @@ CVars setadas automaticamente via console:
 
 ### Gerando um PAK customizado
 
-Se quiser um número diferente de jogadores, use o script `build_pak.py`:
+Se quiser um número diferente de jogadores, use os scripts Python:
 
 ```bash
 # Requer Python 3 (sem dependências externas)
+
+# 1. Gerar a DataTable com scaling para 6 players
+python rebuild_scaling.py
+
+# 2. Gerar o PAK com INI + DataTable
 python build_pak.py --players 8
 ```
 
@@ -214,7 +219,10 @@ python build_pak.py --players 8
 | `--players` | `6` | Número máximo de jogadores |
 | `--input` | `4player.pak` | PAK base para extrair o INI |
 | `--output` | `{N}player.pak` | Nome do arquivo de saída |
+| `--no-scaling` | — | Não incluir DataTable de scaling (só INI) |
 
+> O `rebuild_scaling.py` extrai a DataTable original do jogo e gera versões com 6 rows. O `build_pak.py` inclui automaticamente esses arquivos se existirem em `modified/`.
+>
 > O NetOptimize lê o `MaxPlayers` do PAK automaticamente — não precisa editar nada no Lua ao mudar `--players`.
 
 ---
@@ -224,7 +232,7 @@ python build_pak.py --players 8
 | Limitação | Detalhe |
 |---|---|
 | UI do lobby | A interface do jogo foi projetada para 2-3 slots. Jogadores extras podem não aparecer na lista do lobby, mas entram normalmente. |
-| Spawn de inimigos | Quantidade de inimigos por encounter não muda — apenas vida e dano escalam. |
+| Spawn de inimigos | O PAK escala SpawnQuantity e SpawnWeight nativamente para 5-6P. Vida e dano extras vêm do EnemyScaling (Lua). |
 | Compatibilidade | O mod é para **Remnant: From the Ashes** (UE4). Não funciona com Remnant 2 (formato PAK diferente). |
 | Host obrigatório | O host **precisa** ter UE4SS + NetOptimize para o lobby aceitar mais de 3 conexões. |
 | EnemyScaling | Depende de UE4SS e dos nomes internos de classes/propriedades do jogo. Se uma atualização mudar esses nomes, o mod precisa ser ajustado. |
@@ -239,22 +247,27 @@ O mod opera em três camadas:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Camada 3: UE4SS Lua (runtime)                           │
+│  Camada 4: UE4SS Lua (runtime)                           │
 │  NetOptimize: força GameSession.MaxPlayers = 6,          │
-│  hookeia RegisterPlayer, seta CVars, smoothing           │
+│  seta CVars, smoothing, prioridade de rede               │
 │  EnemyScaling: escala HP/dano dos inimigos               │
+├──────────────────────────────────────────────────────────┤
+│  Camada 3: DataTable Stats_Scaling_NumPlayers (PAK mod)  │
+│  Tabela de scaling nativa do jogo, reconstruída com      │
+│  rows para 5P e 6P (spawn quantity/weight)               │
 ├──────────────────────────────────────────────────────────┤
 │  Camada 2: DefaultGame.ini (PAK mod)                     │
 │  MaxPlayers=6, SteamNetDriver, IpNetDriver,              │
 │  GameNetworkManager (bandwidth, tick rate, timeouts)      │
 ├──────────────────────────────────────────────────────────┤
 │  Camada 1: Jogo original                                 │
-│  MaxPlayers=3, defaults de rede do UE4                   │
+│  MaxPlayers=3, defaults de rede do UE4, DataTable 1-4P   │
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Por que precisa de 3 camadas?**
+**Por que precisa de 4 camadas?**
 - O PAK muda `MaxPlayers` no INI, mas o jogo cria o lobby Steam com `NumPublicConnections=3` **hardcoded no código**. Só mudar o INI não abre mais vagas no lobby.
+- A DataTable original só tem scaling para 1-4 jogadores. Quando o 5º player entra, `FindRow("5")` retorna `nullptr` e o jogo **crasha**. O PAK mod inclui a tabela com 6 rows.
 - O NetOptimize força `GameSession.MaxPlayers` em runtime via UE4SS, fazendo o engine aceitar conexões extras.
 - CVars de smoothing/interpolação não podem ser setadas via INI — precisam de `ConsoleCommand` em runtime.
 
@@ -283,16 +296,35 @@ O mod opera em três camadas:
 | `Player NetPriority` | 1.0 | **3.0** | Players recebem 3x mais bandwidth |
 | `Player MinNetUpdateFrequency` | 2 Hz | **33 Hz** | Mínimo de updates para players |
 
-### Estrutura do arquivo PAK (v3)
+### Stats_Scaling_NumPlayers — DataTable de scaling nativo
+
+O jogo usa a DataTable `Stats_Scaling_NumPlayers` para escalar spawns de inimigos por número de jogadores. A tabela original tem **4 rows** (1P–4P). Quando o 5º ou 6º jogador conecta, o engine faz `FindRow("5")` → `nullptr` → **crash**.
+
+O PAK mod inclui a DataTable **reconstruída com 6 rows**:
+
+| Property | 1P | 2P | 3P | 4P | 5P | 6P |
+|---|---|---|---|---|---|---|
+| SpawnQuantityScalar | 1.00 | 1.33 | 1.66 | 2.00 | **2.33** | **2.66** |
+| SpawnWeightScalar | 1.00 | 1.50 | 1.75 | 1.60 | **1.60** | **1.60** |
+| Demais scalars | 1.00 | 1.00 | 1.00 | 1.00 | **1.00** | **1.00** |
+
+Valores para 5P e 6P foram extrapolados linearmente a partir dos originais. Para regenerar com valores diferentes, edite e execute `rebuild_scaling.py`.
+
+### Estrutura do arquivo PAK (v8)
 
 ```
-┌──────────────┬─────────────────┬─────────┬────────┐
-│ Entry Record │ Compressed Data │  Index  │ Footer │
-│   73 bytes   │   N bytes       │ M bytes │ 44 B   │
-└──────────────┴─────────────────┴─────────┴────────┘
+┌────────────────────────────┬────────────────────────────┬───┬─────────┬────────┐
+│ Entry 1: Record+Compressed │ Entry 2: Record+Compressed │...│  Index  │ Footer │
+│         73+N bytes         │         73+M bytes         │   │ K bytes │ 44 B   │
+└────────────────────────────┴────────────────────────────┴───┴─────────┴────────┘
 ```
 
-O `.pak` contém um único arquivo — `Remnant/Config/DefaultGame.ini` — comprimido com zlib. Quando o jogo inicia, o Unreal Engine mescla os INIs de todos os PAKs carregados.
+O `.pak` contém 3 arquivos comprimidos com zlib:
+- `Remnant/Config/DefaultGame.ini` — MaxPlayers + configs de rede
+- `Remnant/Content/_Core/Stats/Stats_Scaling_NumPlayers.uasset` — header da DataTable (6 rows)
+- `Remnant/Content/_Core/Stats/Stats_Scaling_NumPlayers.uexp` — dados da DataTable (6 rows)
+
+Quando o jogo inicia, o Unreal Engine mescla os INIs e sobrescreve assets de todos os PAKs carregados.
 
 ### EnemyScaling (UE4SS Lua)
 

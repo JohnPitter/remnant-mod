@@ -40,7 +40,9 @@ local PLAYER_NET_PRIORITY = 3.0
 
 -- Frequencia minima de updates de rede para personagens (Hz).
 -- Garante que mesmo com pouca banda, personagens atualizem.
-local MIN_NET_UPDATE_FREQ = 33.0             -- default UE4: 2.0
+-- 33Hz era muito agressivo para 5+ jogadores (causa reliable buffer overflow).
+-- 15Hz é seguro e ainda responsivo.
+local MIN_NET_UPDATE_FREQ = 15.0             -- default UE4: 2.0
 
 -- Fallback para MaxPlayers caso a leitura do GameSession falhe.
 -- Em uso normal nao precisa editar: o mod le o valor que o PAK
@@ -184,6 +186,26 @@ local NET_CVARS = {
 
     -- Mais tolerancia para timestamps de movimento do cliente
     "p.NetServerMoveTimestampExpiredWarningThreshold 5.0",
+
+    -- Desabilita throttling de bandwidth (evita stall no IsNetReady que causa
+    -- acumulo de pacotes e eventual reliable buffer overflow com 5+ jogadores)
+    "net.DisableBandwidthThrottling 1",
+
+    -- Aumenta tamanho maximo de bunches parciais (reduz fragmentacao)
+    "net.MaxConstructedPartialBunchSizeBytes 131072",
+
+    -- Aumenta memoria maxima para replicacao de arrays (previne crash em arrays grandes)
+    "net.MaxRepArrayMemory 131072",
+
+    -- Aumenta limite de arrays replicados
+    "net.MaxRepArraySize 4096",
+
+    -- Limita RPCs por update para espalhar carga entre ticks (previne burst)
+    "net.MaxRPCPerNetUpdate 4",
+
+    -- Timeouts mais tolerantes para conexoes P2P Steam
+    "net.PingTimeout 60.0",
+    "net.CloseTimeout 60.0",
 }
 
 local function TryApplyCVars()
@@ -326,41 +348,52 @@ local function TryFixLobby()
     end
 end
 
--- Hook no RegisterPlayer para interceptar rejeicoes de "game full"
-local registerPlayerHooked = false
+------------------------------------------------------------
+-- FORCE CLIENT BANDWIDTH
+------------------------------------------------------------
 
-local function TryHookRegisterPlayer()
-    if registerPlayerHooked then return end
+-- Clientes sem o PAK mod conectam com ConfiguredInternetSpeed=10000 (10KB/s).
+-- Isso causa throttling severo e acumulo de pacotes reliable.
+-- Forcamos bandwidth alto em todos os players conectados.
 
-    local hookPaths = {
-        "/Script/Engine.GameSession:RegisterPlayer",
-    }
+local processedPlayerSpeeds = {}
 
-    for _, path in ipairs(hookPaths) do
-        local ok = pcall(function()
-            RegisterHook(path, function(Context, ...)
-                if Context:IsValid() then
-                    local session = Context:get()
-                    local target = GetMaxPlayers()
-                    local okMax, curMax = pcall(function() return session.MaxPlayers end)
-                    if okMax and type(curMax) == "number" and curMax < target then
-                        pcall(function() session.MaxPlayers = target end)
-                        Log(string.format(
-                            "RegisterPlayer hook: MaxPlayers forcado %d -> %d",
-                            curMax, target
-                        ))
+local function ForceClientBandwidth()
+    local controllers = FindAllOf("PlayerController")
+    if not controllers then return end
+
+    for _, pc in ipairs(controllers) do
+        if pc:IsValid() then
+            local addr = pc:GetAddress()
+            if not processedPlayerSpeeds[addr] then
+                local fixed = false
+                -- Tenta setar via Player object
+                pcall(function()
+                    local player = pc.Player
+                    if player and player:IsValid() then
+                        player.ConfiguredInternetSpeed = 200000
+                        player.ConfiguredLanSpeed = 200000
+                        fixed = true
                     end
+                end)
+                -- Tenta tambem via ConsoleCommand
+                pcall(function()
+                    pc:ConsoleCommand("net.ConfiguredInternetSpeed 200000", false)
+                end)
+                if fixed then
+                    processedPlayerSpeeds[addr] = true
+                    Log(string.format("Client bandwidth forcado @ 0x%X: 200000", addr))
                 end
-            end)
-        end)
-
-        if ok then
-            registerPlayerHooked = true
-            Log("Hook RegisterPlayer registrado: " .. path)
-            break
+            end
         end
     end
 end
+
+-- NOTA: RegisterPlayer hook REMOVIDO.
+-- O hook causava crash (Unhandled exception via UE4SS) quando o 5o/6o
+-- jogador conectava. Modificar MaxPlayers DURANTE o RegisterPlayer
+-- corrompe estado interno do engine. O TryFixLobby() no loop ja forca
+-- MaxPlayers a cada 4s, o que eh suficiente.
 
 ------------------------------------------------------------
 -- LOOP PRINCIPAL
@@ -374,18 +407,15 @@ Log(string.format(
 ))
 Log("MaxPlayers sera lido do GameSession (setado pelo PAK mod via INI)")
 
--- Tenta hookar RegisterPlayer na inicializacao
-TryHookRegisterPlayer()
-
 LoopAsync(SCAN_INTERVAL_MS, function()
     -- Forca MaxPlayers no GameSession (critico para lobby Steam)
     TryFixLobby()
 
-    -- Tenta hook de RegisterPlayer (caso nao tenha funcionado na init)
-    TryHookRegisterPlayer()
-
     -- Tenta aplicar CVars (uma vez)
     TryApplyCVars()
+
+    -- Forca bandwidth alto em clientes conectados (sem PAK = 10KB/s default)
+    ForceClientBandwidth()
 
     -- Scan de CharacterMovementComponents para smoothing
     ScanMovementComponents()
