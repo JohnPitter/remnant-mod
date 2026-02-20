@@ -2,9 +2,10 @@
 
 Mod que aumenta o limite de jogadores em sessões co-op do **Remnant: From the Ashes** de 3 para **6 jogadores**, com otimizações de rede e balanceamento de inimigos.
 
-Composto por dois módulos:
+Composto por três módulos:
 - **PAK mod** — aumenta `MaxPlayers` e ajusta configs de rede via `DefaultGame.ini`
 - **EnemyScaling (UE4SS)** — escala vida e dano dos inimigos com base no número de jogadores
+- **NetOptimize (UE4SS)** — smoothing, interpolação e prioridades de rede em runtime
 
 ## Instalação
 
@@ -44,7 +45,7 @@ O mod de balanceamento usa [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) para es
    Remnant From the Ashes\Remnant\Binaries\Win64\
    ```
    Isso cria a pasta `Mods/` e os arquivos `xinput1_3.dll`, `UE4SS.dll`, etc.
-3. Copie a pasta `ue4ss/Mods/EnemyScaling/` deste repositório para dentro de `Mods/`:
+3. Copie as pastas `ue4ss/Mods/EnemyScaling/` e `ue4ss/Mods/NetOptimize/` para dentro de `Mods/`:
    ```
    Remnant From the Ashes\
    └── Remnant\
@@ -53,12 +54,14 @@ O mod de balanceamento usa [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) para es
                ├── xinput1_3.dll         ← UE4SS
                ├── UE4SS.dll             ← UE4SS
                └── Mods\
-                   └── EnemyScaling\     ← copiar aqui
-                       ├── Scripts\
-                       │   └── main.lua
+                   ├── EnemyScaling\     ← balanceamento
+                   │   ├── Scripts\main.lua
+                   │   └── enabled.txt
+                   └── NetOptimize\      ← smoothing e rede
+                       ├── Scripts\main.lua
                        └── enabled.txt
    ```
-4. Inicie o jogo. O console do UE4SS mostra logs `[EnemyScaling]` confirmando que o mod está ativo.
+4. Inicie o jogo. O console do UE4SS mostra logs `[EnemyScaling]` e `[NetOptimize]` confirmando que os mods estão ativos.
 
 #### Configuração do EnemyScaling
 
@@ -73,10 +76,31 @@ Edite os valores no topo de `main.lua`:
 
 Exemplo com 6 jogadores (3 extras): HP = 2.05x, Dano = 1.45x.
 
+#### Configuração do NetOptimize
+
+O NetOptimize elimina teleporte residual e melhora a fluidez visual configurando smoothing, interpolação e prioridades de rede em runtime.
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `SMOOTH_LOCATION_TIME` | `0.100` | Tempo de interpolação de posição (s) |
+| `LISTEN_SMOOTH_LOCATION_TIME` | `0.080` | Interpolação no listen server (s) |
+| `MAX_SMOOTH_DISTANCE` | `512.0` | Distância máx para suavizar (além disso, snap) |
+| `PLAYER_NET_PRIORITY` | `3.0` | Prioridade de rede dos jogadores (default UE4: 1.0) |
+| `MIN_NET_UPDATE_FREQ` | `33.0` | Update mínimo de rede para jogadores (Hz) |
+
+O mod também seta CVars do engine via console:
+
+| CVar | Valor | Efeito |
+|---|---|---|
+| `p.NetEnableListenServerSmoothing` | `1` | Habilita smoothing no listen server (desabilitado por default!) |
+| `p.NetClientSmoothingMode` | `2` | Interpolação exponencial (mais suave que linear) |
+| `p.NetEnableMoveCombining` | `1` | Combina updates de movimento em pacotes maiores |
+| `p.NetCorrectionLifetime` | `0.5` | Correções de posição são suavizadas em 0.5s em vez de snap |
+
 ### Desinstalação
 
 - **PAK mod:** remova `6player.pak` da pasta `~mods`
-- **EnemyScaling:** delete a pasta `EnemyScaling` de dentro de `Mods/`, ou remova o `enabled.txt`
+- **Mods UE4SS:** delete as pastas `EnemyScaling` e/ou `NetOptimize` de dentro de `Mods/`, ou remova o `enabled.txt` de cada um
 
 ---
 
@@ -197,3 +221,12 @@ O mod Lua roda dentro do UE4SS e executa um loop periódico:
 5. **Re-escala** quando o número de jogadores muda (alguém entra/sai)
 
 O mod tenta múltiplos nomes de classes e propriedades para compatibilidade com a hierarquia do GunfireRuntime.
+
+### NetOptimize (UE4SS Lua)
+
+Complementa o PAK mod com otimizações que só são possíveis em runtime:
+
+1. **Smoothing** — configura `CharacterMovementComponent` de todos os personagens com interpolação exponencial e tempos otimizados para listen server
+2. **CVars** — seta variáveis do engine via `ConsoleCommand`: habilita smoothing no listen server (`p.NetEnableListenServerSmoothing`), combina pacotes de movimento, e suaviza correções de posição
+3. **Prioridade de rede** — jogadores recebem `NetPriority=3.0` (3x o padrão) e `MinNetUpdateFrequency=33Hz`, garantindo que bandwidth é alocada primeiro para players
+4. **Always Relevant** — marca player pawns como sempre relevantes, evitando que o engine "durma" a replicação de jogadores distantes
