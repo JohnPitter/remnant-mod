@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 
+# Outputs temporarios
+extracted/
+*.txt
+
 # Claude Code
 .claude/
 CLAUDE.md
